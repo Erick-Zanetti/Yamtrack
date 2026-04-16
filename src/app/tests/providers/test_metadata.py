@@ -34,6 +34,59 @@ class Metadata(TestCase):
         self.assertEqual(response["details"]["status"], "Finished")
         self.assertEqual(response["details"]["episodes"], 26)
 
+    def test_get_related_preserves_relation_type(self):
+        """get_related must keep relation_type (sequel / side_story / etc)."""
+        payload = [
+            {
+                "node": {"id": 2, "title": "Part 2", "main_picture": {"large": "u"}},
+                "relation_type": "sequel",
+            },
+            {
+                "node": {"id": 3, "title": "Side", "main_picture": {"large": "u"}},
+                "relation_type": "side_story",
+            },
+            {
+                "node": {"id": 4, "title": "Mystery", "main_picture": {"large": "u"}},
+            },
+        ]
+        result = mal.get_related(payload, MediaTypes.ANIME.value)
+        self.assertEqual(result[0]["relation_type"], "sequel")
+        self.assertEqual(result[1]["relation_type"], "side_story")
+        self.assertIsNone(result[2]["relation_type"])
+
+    @patch("app.providers.services.api_request")
+    def test_anime_response_exposes_relation_type(self, mock_api_request):
+        """anime() exposes relation_type inside related.related_anime entries."""
+        from django.core.cache import cache
+
+        cache.clear()
+        mock_api_request.return_value = {
+            "id": 1000,
+            "title": "Root Anime",
+            "main_picture": {"large": "u"},
+            "synopsis": "s",
+            "status": "finished_airing",
+            "num_episodes": 12,
+            "average_episode_duration": 1440,
+            "media_type": "tv",
+            "studios": [],
+            "related_anime": [
+                {
+                    "node": {
+                        "id": 2000,
+                        "title": "Sequel",
+                        "main_picture": {"large": "u"},
+                    },
+                    "relation_type": "sequel",
+                },
+            ],
+            "recommendations": [],
+        }
+        response = mal.anime("1000")
+        related = response["related"]["related_anime"]
+        self.assertEqual(len(related), 1)
+        self.assertEqual(related[0]["relation_type"], "sequel")
+
     @patch("requests.Session.get")
     def test_anime_unknown(self, mock_data):
         """Test the metadata method for anime with mostly unknown data."""
