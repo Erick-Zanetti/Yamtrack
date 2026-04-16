@@ -78,4 +78,63 @@
               {% if not media %}disabled{% endif %}>Delete</button>
     </div>
   </form>
+
+  {% if seasons_json %}
+    <div class="mt-6 pt-6 border-t border-gray-700"
+         x-data='markUpTo({{ seasons_json|safe }})'>
+      <h3 class="text-lg font-semibold text-white mb-3">Mark progress up to…</h3>
+      <p class="text-sm text-gray-400 mb-3">
+        Pick the last episode you watched. Yamtrack will mark all prior seasons
+        as Completed and create episode records for this season up to the
+        chosen episode.
+      </p>
+      <form method="post"
+            action="{% url 'tv_mark_progress' %}?next={{ return_url }}"
+            class="space-y-3">
+        {% csrf_token %}
+        <input type="hidden" name="source" value="{{ form.source.value }}">
+        <input type="hidden" name="media_id" value="{{ form.media_id.value }}">
+        <div class="grid grid-cols-2 gap-3">
+          <div>
+            <label class="block text-sm text-gray-300 mb-1" for="mark-season">Season</label>
+            <select id="mark-season" name="season_number" x-model="season"
+                    class="w-full p-2 bg-[#39404b] rounded-md text-white border border-gray-600 focus:outline-none focus:ring-2 focus:ring-[#4a9eff]">
+              <template x-for="s in seasons" :key="s.season_number">
+                <option :value="s.season_number"
+                        x-text="'S' + s.season_number + ' — ' + s.season_title"></option>
+              </template>
+            </select>
+          </div>
+          <div>
+            <label class="block text-sm text-gray-300 mb-1" for="mark-episode">Episode</label>
+            <select id="mark-episode" name="episode_number" x-model="episode"
+                    class="w-full p-2 bg-[#39404b] rounded-md text-white border border-gray-600 focus:outline-none focus:ring-2 focus:ring-[#4a9eff]">
+              <template x-for="n in maxEps" :key="n">
+                <option :value="n" x-text="'E' + n"></option>
+              </template>
+            </select>
+          </div>
+        </div>
+        <button type="submit"
+                class="w-full px-4 py-2 bg-emerald-600 text-white rounded-md hover:bg-emerald-700 cursor-pointer">
+          Mark watched up to <span x-text="'S' + season + 'E' + episode"></span>
+        </button>
+      </form>
+    </div>
+    <script>
+      function markUpTo(seasons) {
+        const defaultSeason = seasons.length ? seasons[0].season_number : 1;
+        return {
+          seasons,
+          season: defaultSeason,
+          episode: 1,
+          get maxEps() {
+            const s = this.seasons.find(x => x.season_number == this.season);
+            const total = s && s.max_progress ? s.max_progress : 0;
+            return Array.from({ length: total }, (_, i) => i + 1);
+          },
+        };
+      }
+    </script>
+  {% endif %}
 </div>

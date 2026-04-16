@@ -23,6 +23,7 @@ from app.forms import EpisodeForm, ManualItemForm, get_form_class
 from app.models import (
     TV,
     BasicMedia,
+    Episode,
     Item,
     MediaTypes,
     Season,
@@ -516,6 +517,30 @@ def track_modal(
 
     form = get_form_class(media_type)(instance=media, initial=initial_data)
 
+    # For TV, include seasons metadata so the template can render
+    # a "mark progress up to S/E" quick action.
+    seasons_json = None
+    if media_type == MediaTypes.TV.value:
+        try:
+            tv_metadata = services.get_media_metadata(
+                MediaTypes.TV.value,
+                media_id,
+                source,
+            )
+            seasons = [
+                {
+                    "season_number": s["season_number"],
+                    "season_title": s.get("season_title") or f"Season {s['season_number']}",
+                    "max_progress": s.get("max_progress") or 0,
+                }
+                for s in tv_metadata.get("related", {}).get("seasons", [])
+                if s.get("season_number", 0) > 0
+            ]
+            import json as _json
+            seasons_json = _json.dumps(seasons)
+        except Exception:
+            logger.exception("Failed to fetch TV seasons for quick-mark UI")
+
     return render(
         request,
         "app/components/fill_track.html",
@@ -524,6 +549,7 @@ def track_modal(
             "form": form,
             "media": media,
             "return_url": request.GET["return_url"],
+            "seasons_json": seasons_json,
         },
     )
 
@@ -620,6 +646,154 @@ def mark_user_messages_shown(request):
         shown_at__isnull=True,
     ).update(shown_at=timezone.now())
     return HttpResponse(status=204)
+
+
+@require_POST
+def tv_mark_progress(request):
+    """Mark a TV show watched up to a specific (season, episode).
+
+    Creates:
+    - All seasons 1..target_season-1 as Completed (auto-fills episodes).
+    - target_season as In Progress (or Completed if target_episode covers all
+      released episodes), with individual Episode records 1..target_episode.
+    Later seasons are untouched.
+    """
+    source = request.POST["source"]
+    media_id = request.POST["media_id"]
+    target_season = int(request.POST["season_number"])
+    target_episode = int(request.POST["episode_number"])
+
+    tv_metadata = services.get_media_metadata(
+        MediaTypes.TV.value,
+        media_id,
+        source,
+    )
+
+    tv_item, _ = Item.objects.get_or_create(
+        media_id=media_id,
+        source=source,
+        media_type=MediaTypes.TV.value,
+        defaults={
+            "title": tv_metadata["title"],
+            "image": tv_metadata.get("image", ""),
+        },
+    )
+    tv, _ = TV.objects.get_or_create(
+        item=tv_item,
+        user=request.user,
+        defaults={"status": Status.PLANNING.value},
+    )
+
+    all_seasons = [
+        s for s in tv_metadata.get("related", {}).get("seasons", [])
+        if s.get("season_number", 0) > 0
+    ]
+
+    # Mark prior seasons as Completed (auto-fills episodes via Season.save).
+    for season_info in all_seasons:
+        sn = season_info["season_number"]
+        if sn >= target_season:
+            continue
+        season_item, _ = Item.objects.get_or_create(
+            media_id=media_id,
+            source=source,
+            media_type=MediaTypes.SEASON.value,
+            season_number=sn,
+            defaults={
+                "title": tv_item.title,
+                "image": season_info.get("image", tv_item.image),
+            },
+        )
+        existing = Season.objects.filter(item=season_item, user=request.user).first()
+        if existing:
+            if existing.status != Status.COMPLETED.value:
+                existing.status = Status.COMPLETED.value
+                existing.save()
+        else:
+            Season(
+                item=season_item,
+                user=request.user,
+                related_tv=tv,
+                status=Status.COMPLETED.value,
+            ).save()
+
+    # Target season: create (if missing) with In Progress status; then create
+    # Episode records 1..target_episode (skipping ones that already exist).
+    target_season_info = next(
+        (s for s in all_seasons if s["season_number"] == target_season),
+        None,
+    )
+    if target_season_info is None:
+        messages.error(
+            request,
+            f"Season {target_season} not found in TMDB metadata for this show.",
+        )
+        return helpers.redirect_back(request)
+
+    target_item, _ = Item.objects.get_or_create(
+        media_id=media_id,
+        source=source,
+        media_type=MediaTypes.SEASON.value,
+        season_number=target_season,
+        defaults={
+            "title": tv_item.title,
+            "image": target_season_info.get("image", tv_item.image),
+        },
+    )
+    target_season_row = Season.objects.filter(
+        item=target_item,
+        user=request.user,
+    ).first()
+    if target_season_row is None:
+        # Start as Planning to skip Season.save's auto-episode fill (which
+        # only fires on Completed). We'll add episodes explicitly below, then
+        # update the status.
+        target_season_row = Season(
+            item=target_item,
+            user=request.user,
+            related_tv=tv,
+            status=Status.PLANNING.value,
+        )
+        target_season_row.save()
+
+    season_metadata = services.get_media_metadata(
+        MediaTypes.SEASON.value,
+        media_id,
+        source,
+        [target_season],
+    )
+
+    existing_ep_numbers = set(
+        Episode.objects.filter(related_season=target_season_row)
+        .values_list("item__episode_number", flat=True),
+    )
+
+    watch_time = timezone.now().replace(second=0, microsecond=0)
+    for ep_info in season_metadata.get("episodes", []):
+        ep_num = ep_info.get("episode_number")
+        if ep_num is None or ep_num > target_episode:
+            continue
+        if ep_num in existing_ep_numbers:
+            continue
+        target_season_row.watch(ep_num, watch_time)
+
+    # Let save() normalize status now that episodes are in place.
+    max_released = target_season_info.get("max_progress") or 0
+    target_season_row.refresh_from_db()
+    if target_season_row.progress >= max_released and max_released > 0:
+        if target_season_row.status != Status.COMPLETED.value:
+            target_season_row.status = Status.COMPLETED.value
+            target_season_row.save()
+    elif target_season_row.progress > 0:
+        if target_season_row.status != Status.IN_PROGRESS.value:
+            target_season_row.status = Status.IN_PROGRESS.value
+            target_season_row.save()
+
+    messages.success(
+        request,
+        f"Marked watched up to {tv_item.title} S{target_season}E{target_episode}.",
+    )
+    return helpers.redirect_back(request)
 
 
 @require_POST
