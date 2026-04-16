@@ -1890,3 +1890,47 @@ class BoardGame(Media):
     """Model for board games."""
 
     tracker = FieldTracker()
+
+
+class SequelSuggestion(models.Model):
+    """Suggested next anime based on a completed anime's sequel chain."""
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="sequel_suggestions",
+    )
+    root = models.ForeignKey(
+        "Anime",
+        on_delete=models.CASCADE,
+        related_name="sequel_suggestions",
+    )
+    target = models.ForeignKey(
+        "Item",
+        on_delete=models.CASCADE,
+        related_name="suggested_as_sequel",
+    )
+    additional_count = models.PositiveIntegerField(default=0)
+    chain_depth = models.PositiveIntegerField(default=1)
+    target_release_status = models.CharField(max_length=20, blank=True)
+    dismissed_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    refreshed_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        """Meta options for the model."""
+
+        constraints = [
+            UniqueConstraint(
+                fields=["user", "root", "target"],
+                name="unique_sequel_suggestion_per_user",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["user", "dismissed_at"]),
+        ]
+        ordering = ["-refreshed_at"]
+
+    def __str__(self):
+        """Return a human-readable label."""
+        return f"{self.root} → {self.target}"
