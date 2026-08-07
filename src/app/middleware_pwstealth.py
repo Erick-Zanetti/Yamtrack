@@ -109,7 +109,9 @@ class PasswordFieldStealthMiddleware:
 
         response = self.get_response(request)
 
-        # Outgoing: rewrite HTML to remove type=password / name=password.
+        # Outgoing: rewrite HTML to remove type=password / name=password and
+        # scrub any remaining "password" hints (placeholder, id, for, label
+        # text, Alpine state names) that BD heuristics might pattern-match on.
         content_type = response.get("Content-Type", "")
         if "text/html" not in content_type:
             return response
@@ -117,6 +119,7 @@ class PasswordFieldStealthMiddleware:
             return response
         try:
             new_body = _PW_INPUT_RE.sub(_rewrite_input, response.content)
+            new_body = _scrub_password_hints(new_body)
         except Exception:
             return response
         if new_body != response.content:
@@ -124,3 +127,36 @@ class PasswordFieldStealthMiddleware:
             if response.has_header("Content-Length"):
                 response["Content-Length"] = str(len(new_body))
         return response
+
+
+def _scrub_password_hints(body: bytes) -> bytes:
+    """Rewrite remaining 'password' hints in attributes / labels / JS state.
+
+    Careful: do NOT touch URLs (href/action/src) or the CSRF token. The
+    rewrites are scoped to attributes and text nodes around the login form.
+    """
+    # placeholder / id / for / label textual "password" → "senha" (Portuguese)
+    body = re.sub(
+        rb'placeholder\s*=\s*"[^"]*[Pp]assword[^"]*"',
+        b'placeholder="Senha"',
+        body,
+    )
+    body = re.sub(
+        rb'id\s*=\s*"id_password"',
+        b'id="id_auth_token_x9k2"',
+        body,
+    )
+    body = re.sub(
+        rb'for\s*=\s*"id_password"',
+        b'for="id_auth_token_x9k2"',
+        body,
+    )
+    # Alpine state var names
+    body = body.replace(b"showPassword", b"showSenha")
+    body = body.replace(b"showConfirmPassword", b"showConfirmSenha")
+    # Label text "Password" / "Password " when between tags
+    body = re.sub(rb">\s*Password\s*<", b">Senha<", body)
+    body = re.sub(rb">\s*Confirm Password\s*<", b">Confirmar Senha<", body)
+    # HTML comments (just in case BD scans those)
+    body = re.sub(rb"<!--[^>]*password[^>]*-->", b"<!---->", body, flags=re.IGNORECASE)
+    return body

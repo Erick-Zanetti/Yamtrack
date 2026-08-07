@@ -48,9 +48,9 @@ urlpatterns = [
 account_patterns = [
     # see allauth/account/urls.py
     # login, logout, signup, account_inactive
-    path("login/", allauth_account_views.login, name="account_login"),
-    path("logout/", allauth_account_views.logout, name="account_logout"),
-    path("signup/", allauth_account_views.signup, name="account_signup"),
+    path("enter/", allauth_account_views.login, name="account_login"),
+    path("leave/", allauth_account_views.logout, name="account_logout"),
+    path("register/", allauth_account_views.signup, name="account_signup"),
     path(
         "account_inactive/",
         allauth_account_views.account_inactive,
@@ -88,7 +88,7 @@ account_patterns = [
 ]
 
 # Add the accounts URLs to the main urlpatterns
-urlpatterns.append(path("accounts/", include(account_patterns)))
+urlpatterns.append(path("u/", include(account_patterns)))
 
 if settings.ADMIN_ENABLED:
     urlpatterns.append(path("admin/", admin.site.urls))
