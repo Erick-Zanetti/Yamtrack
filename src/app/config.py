@@ -75,6 +75,7 @@ MEDIA_TYPE_CONFIG = {
         "svg_icon": """
             <rect width="20" height="15" x="2" y="7" rx="2" ry="2"/>
             <polyline points="17 2 12 7 7 2"/>""",
+        "unit": ("E", "Episode"),
     },
     MediaTypes.SEASON.value: {
         "sources": [Sources.TMDB],
@@ -246,6 +247,11 @@ STATUS_CONFIG = {
         "text_color": COLORS["red"]["text"],
         "stats_color": COLORS["red"]["hex"],
         "background_color": COLORS["red"]["background"],
+    },
+    Status.TODO.value: {
+        "text_color": COLORS["yellow"]["text"],
+        "stats_color": COLORS["yellow"]["hex"],
+        "background_color": COLORS["yellow"]["background"],
     },
 }
 

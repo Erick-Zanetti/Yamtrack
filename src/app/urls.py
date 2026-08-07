@@ -88,4 +88,13 @@ urlpatterns = [
     ),
     path("statistics", views.statistics, name="statistics"),
     path("serviceworker.js", views.service_worker, name="service_worker"),
+    path("tags", views.tags, name="tags"),
+    path("tags/<int:tag_id>/edit", views.tag_edit, name="tag_edit"),
+    path("tags/<int:tag_id>/delete", views.tag_delete, name="tag_delete"),
+    path(
+        "tags_modal/<media_type:media_type>/<int:instance_id>",
+        views.tags_modal,
+        name="tags_modal",
+    ),
+    path("media_tag_toggle", views.media_tag_toggle, name="media_tag_toggle"),
 ]

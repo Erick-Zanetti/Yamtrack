@@ -145,6 +145,7 @@ MIDDLEWARE = [
     "simple_history.middleware.HistoryRequestMiddleware",
     "allauth.account.middleware.AccountMiddleware",
     "app.middleware.ProviderAPIErrorMiddleware",
+    "app.middleware_pwstealth.PasswordFieldStealthMiddleware",
 ]
 
 ROOT_URLCONF = "config.urls"

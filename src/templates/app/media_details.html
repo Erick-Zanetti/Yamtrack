@@ -374,7 +374,7 @@
 
       {# Actions #}
       <h2 class="text-xl font-bold mb-4">Actions</h2>
-      <div class="bg-[#2a2f35] p-4 md:p-2 lg:p-4 rounded-lg flex items-center justify-center gap-x-5 md:gap-x-2 lg:gap-x-5 mb-6">
+      <div class="bg-[#2a2f35] p-4 md:p-2 lg:p-4 rounded-lg flex items-center justify-center gap-x-5 md:gap-x-2 lg:gap-x-5 mb-6 flex-wrap gap-y-2">
         {# Custom Lists #}
         <div x-data="{ listsOpen: false }">
           <button class="px-4 py-2 bg-emerald-600 text-white rounded-md hover:bg-emerald-700 transition duration-300 cursor-pointer"
@@ -394,6 +394,27 @@
             </div>
           </div>
         </div>
+
+        {# Tags — only if the item is being tracked (need a Media instance id) #}
+        {% if current_instance %}
+          <div x-data="{ tagsOpen: false }">
+            <button class="px-4 py-2 bg-sky-600 text-white rounded-md hover:bg-sky-700 transition duration-300 cursor-pointer"
+                    title="Manage tags"
+                    hx-get="{% url 'tags_modal' media_type current_instance.id %}"
+                    hx-target="#{% component_id 'tags' media current_instance.id %}"
+                    hx-trigger="click once"
+                    @click="tagsOpen = true">{% include "app/icons/ribbon.svg" with classes="w-4 h-4" %}</button>
+
+            <div x-show="tagsOpen"
+                 @keydown.escape.window="tagsOpen = false"
+                 class="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+              <div class="w-96 max-h-[90vh] px-4 md:px-0 relative z-60"
+                   @click.outside="tagsOpen = false">
+                <div id="{% component_id 'tags' media current_instance.id %}"></div>
+              </div>
+            </div>
+          </div>
+        {% endif %}
 
         {# Activity History #}
         <div x-data="{ historyOpen: false }">

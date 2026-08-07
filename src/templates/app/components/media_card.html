@@ -1,7 +1,7 @@
 {% load app_tags %}
 
 <div class="{% if secondary_color %}bg-[#39404b]{% else %}bg-[#2a2f35]{% endif %} rounded-lg overflow-hidden shadow-lg relative {% if active %}ring-[1.5px] ring-slate-400{% endif %}"
-     x-data="{ trackOpen: false, listsOpen: false, historyOpen: false }">
+     x-data="{ trackOpen: false, listsOpen: false, historyOpen: false, tagsOpen: false }">
   <div class="relative">
     <a href="{{ item|media_url }}">
       <img alt="{{ title }}"
@@ -69,10 +69,32 @@
       </div>
     {% endif %}
 
+    {% if media.pk %}
+      {% with media_tags=media.tags.all %}
+        {% if media_tags %}
+          <div class="absolute bottom-2 right-2 flex flex-row-reverse gap-1 items-center max-w-[60%] overflow-hidden shadow-md">
+            {% for tag in media_tags %}
+              {% if forloop.counter <= 2 %}
+                <span class="text-white text-xs px-2 py-1 rounded-md truncate"
+                      style="background-color: {{ tag.color|tag_color_hex }};"
+                      title="{{ tag.name }}">{{ tag.name }}</span>
+              {% endif %}
+            {% endfor %}
+            {% if media_tags|length > 2 %}
+              <span class="text-white text-xs px-1.5 py-1 rounded-md bg-gray-900/90"
+                    title="{% for t in media_tags %}{{ t.name }}{% if not forloop.last %}, {% endif %}{% endfor %}">
+                +{{ media_tags|length|add:"-2" }}
+              </span>
+            {% endif %}
+          </div>
+        {% endif %}
+      {% endwith %}
+    {% endif %}
+
     <div class="absolute inset-0 bg-black/50 flex items-center justify-center opacity-0 hover-tap:opacity-100{% if user.clickable_media_cards %} pointer-coarse:hidden{% endif %}">
       <a href="{{ item|media_url }}" class="absolute inset-0"></a>
 
-      <div class="relative flex items-center justify-center space-x-2.5">
+      <div class="relative grid grid-cols-2 gap-2.5">
         {% if item.media_type == MediaTypes.EPISODE.value %}
           <button @click="trackOpen = true"
                   class="p-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-full hover:scale-110 hover:shadow-[0_0_15px_rgba(99,102,241,0.5)] transition-all duration-200 cursor-pointer">
@@ -110,6 +132,16 @@
                 hx-target="#{% component_id 'history' item %}"
                 hx-trigger="click once"
                 @click="historyOpen = true">{% include "app/icons/history.svg" with classes="w-4 h-4" %}</button>
+
+        {# Tags Button — only when there's a tracked instance to attach tags to #}
+        {% if media.pk and item.media_type != MediaTypes.EPISODE.value %}
+          <button class="p-2.5 bg-sky-600 text-white rounded-full hover:bg-sky-700 hover:scale-110 hover:shadow-[0_0_15px_rgba(14,165,233,0.5)] transition-all duration-200 cursor-pointer"
+                  title="Manage tags"
+                  hx-get="{% url 'tags_modal' item.media_type media.pk %}"
+                  hx-target="#{% component_id 'tags' item media.id %}"
+                  hx-trigger="click once"
+                  @click="tagsOpen = true">{% include "app/icons/ribbon.svg" with classes="w-4 h-4" %}</button>
+        {% endif %}
       </div>
     </div>
   </div>
@@ -153,5 +185,17 @@
       <div id="{% component_id 'history' item %}"></div>
     </div>
   </div>
+
+  {# Tags Modal #}
+  {% if media.pk %}
+    <div x-show="tagsOpen"
+         @keydown.escape.window="tagsOpen = false"
+         class="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+      <div class="w-96 max-h-[90vh] px-4 md:px-0 relative z-60"
+           @click.outside="tagsOpen = false">
+        <div id="{% component_id 'tags' item media.id %}"></div>
+      </div>
+    </div>
+  {% endif %}
   {% include "app/components/progress_bar.html" with media=media user=user only %}
 </div>

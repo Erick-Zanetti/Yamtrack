@@ -436,6 +436,40 @@ def get_pagination_range(current_page, total_pages, window):
     return result
 
 
+TAG_COLOR_HEX = {
+    "indigo": "#4f46e5",
+    "emerald": "#059669",
+    "amber": "#d97706",
+    "rose": "#e11d48",
+    "sky": "#0284c7",
+    "fuchsia": "#c026d3",
+    "lime": "#65a30d",
+    "orange": "#ea580c",
+    "teal": "#0d9488",
+    "violet": "#7c3aed",
+    "pink": "#db2777",
+    "cyan": "#0891b2",
+    "red": "#dc2626",
+    "yellow": "#ca8a04",
+    "slate": "#475569",
+}
+
+
+@register.filter
+def tag_color_hex(color):
+    """Return the hex code for a tag color name."""
+    return TAG_COLOR_HEX.get(color, TAG_COLOR_HEX["indigo"])
+
+
+@register.filter
+def in_set(value, collection):
+    """Return True if value is in the given collection (set/list/tuple)."""
+    try:
+        return value in collection
+    except TypeError:
+        return False
+
+
 @register.filter
 def show_media_score(rating, user):
     """

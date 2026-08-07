@@ -8,6 +8,7 @@ from app.models import (
     Episode,
     Item,
     SequelSuggestion,
+    Tag,
     UserMessage,
 )
 
@@ -66,6 +67,15 @@ class UserMessageAdmin(admin.ModelAdmin):
     list_filter = ["level", "shown_at"]
 
 
+@admin.register(Tag)
+class TagAdmin(admin.ModelAdmin):
+    """Custom admin for Tag model."""
+
+    search_fields = ["name", "user__username"]
+    list_display = ["name", "color", "user", "created_at"]
+    list_filter = ["color"]
+
+
 class MediaAdmin(admin.ModelAdmin):
     """Custom admin for regular media model with search and filter options."""
 
@@ -79,7 +89,7 @@ class MediaAdmin(admin.ModelAdmin):
 
 # Auto-register remaining models
 app_models = apps.get_app_config("app").get_models()
-SpecialModels = ["Item", "Episode", "BasicMedia", "UserMessage", "SequelSuggestion"]
+SpecialModels = ["Item", "Episode", "BasicMedia", "UserMessage", "SequelSuggestion", "Tag"]
 for model in app_models:
     if (
         not model.__name__.startswith("Historical")

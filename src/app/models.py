@@ -216,6 +216,30 @@ class Item(CalendarTriggerMixin, models.Model):
             events.tasks.reload_calendar(items_to_process=items_to_process)
 
 
+class Tag(models.Model):
+    """User-owned label that can be attached to tracked media instances."""
+
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
+    name = models.CharField(max_length=50)
+    color = models.CharField(max_length=20, default="indigo")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        """Meta options for the Tag model."""
+
+        ordering = ["name"]
+        constraints = [
+            UniqueConstraint(
+                fields=["user", "name"],
+                name="app_tag_unique_user_name",
+            ),
+        ]
+
+    def __str__(self):
+        """Return the tag name."""
+        return self.name
+
+
 class MediaManager(models.Manager):
     """Custom manager for media models."""
 
@@ -223,7 +247,15 @@ class MediaManager(models.Manager):
         """Return list of historical model names."""
         return [f"historical{media_type}" for media_type in MediaTypes.values]
 
-    def get_media_list(self, user, media_type, status_filter, sort_filter, search=None):
+    def get_media_list(
+        self,
+        user,
+        media_type,
+        status_filter,
+        sort_filter,
+        search=None,
+        tag_filter=None,
+    ):
         """Get media list based on filters, sorting and search."""
         model = apps.get_model(app_label="app", model_name=media_type)
         queryset = model.objects.filter(user=user.id)
@@ -233,6 +265,9 @@ class MediaManager(models.Manager):
 
         if search:
             queryset = queryset.filter(item__title__icontains=search)
+
+        if tag_filter:
+            queryset = queryset.filter(tags__id=tag_filter)
 
         queryset = queryset.annotate(
             repeats=Window(
@@ -247,6 +282,7 @@ class MediaManager(models.Manager):
         ).filter(row_number=1)
 
         queryset = queryset.select_related("item")
+        queryset = queryset.prefetch_related("tags")
         queryset = self._apply_prefetch_related(queryset, media_type)
 
         if sort_filter:
@@ -288,6 +324,16 @@ class MediaManager(models.Manager):
 
     def _sort_media_list(self, queryset, sort_filter, media_type=None):
         """Sort media list using SQL sorting with annotations for calculated fields."""
+        if sort_filter == "tag":
+            # Sort by the alphabetically-first tag name per row; untagged last.
+            queryset = queryset.annotate(
+                first_tag=models.Min("tags__name"),
+            )
+            return queryset.order_by(
+                models.functions.Lower("first_tag").asc(nulls_last=True),
+                models.functions.Lower("item__title"),
+            )
+
         if media_type == MediaTypes.TV.value:
             return self._sort_tv_media_list(queryset, sort_filter)
         if media_type == MediaTypes.SEASON.value:
@@ -419,7 +465,9 @@ class MediaManager(models.Manager):
     ):
         """Get a home media list for a specific status grouped by media type."""
         list_by_type = {}
-        media_types = self._get_media_types_to_process(user, specific_media_type)
+        media_types = self._get_media_types_to_process(
+            user, specific_media_type, status=status,
+        )
 
         for media_type in media_types:
             # Get base media list for the requested status
@@ -454,17 +502,18 @@ class MediaManager(models.Manager):
 
         return list_by_type
 
-    def _get_media_types_to_process(self, user, specific_media_type):
+    def _get_media_types_to_process(self, user, specific_media_type, status=None):
         """Determine which media types to process based on user settings."""
         if specific_media_type:
             return [specific_media_type]
 
-        # Get active types excluding TV
-        return [
-            media_type
-            for media_type in user.get_active_media_types()
-            if media_type != MediaTypes.TV.value
-        ]
+        active = list(user.get_active_media_types())
+        # TV is normally excluded because the actionable unit is the Season —
+        # "In Progress" / "Planning" rows are per-season. But whole-show states
+        # like Paused/Todo are semantically TV-level, so include TV for those.
+        if status in (Status.PAUSED.value, Status.TODO.value):
+            return active
+        return [media_type for media_type in active if media_type != MediaTypes.TV.value]
 
     def _annotate_next_event(self, media_list):
         """Annotate next_event for media items."""
@@ -770,6 +819,7 @@ class Status(models.TextChoices):
     PLANNING = "Planning", "Planning"
     PAUSED = "Paused", "Paused"
     DROPPED = "Dropped", "Dropped"
+    TODO = "Todo", "Todo"
 
 
 class UserMessageLevel(models.TextChoices):
@@ -854,6 +904,7 @@ class Media(models.Model):
     start_date = models.DateTimeField(null=True, blank=True)
     end_date = models.DateTimeField(null=True, blank=True)
     notes = models.TextField(blank=True, default="")
+    tags = models.ManyToManyField(Tag, related_name="%(class)s_set", blank=True)
 
     class Meta:
         """Meta options for the model."""

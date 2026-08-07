@@ -1,0 +1,123 @@
+{% extends "base.html" %}
+{% load app_tags %}
+
+{% block title %}Tags - Yamtrack{% endblock title %}
+
+{% block content %}
+  <div class="max-w-3xl mx-auto">
+    <div class="flex items-center justify-between mb-6">
+      <h1 class="text-3xl font-bold">Tags</h1>
+    </div>
+
+    <div class="bg-[#2a2f35] p-4 rounded-lg mb-6">
+      <h2 class="text-lg font-semibold mb-3">Create a new tag</h2>
+      <form method="post"
+            action="{% url 'tags' %}"
+            class="flex flex-col md:flex-row gap-3 md:items-center"
+            x-data="{ color: 'indigo' }">
+        {% csrf_token %}
+        <input name="name"
+               type="text"
+               required
+               maxlength="50"
+               placeholder="Tag name"
+               class="flex-1 py-2 px-3 bg-[#39404b] rounded-md text-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
+        <div class="flex flex-wrap gap-2 items-center">
+          {% for c in tag_colors %}
+            <label class="cursor-pointer">
+              <input type="radio"
+                     name="color"
+                     value="{{ c }}"
+                     class="hidden"
+                     x-model="color"
+                     {% if forloop.first %}checked{% endif %}>
+              <span class="w-6 h-6 block rounded-full ring-offset-2 ring-offset-[#2a2f35]"
+                    style="background-color: {{ c|tag_color_hex }};"
+                    :class="color === '{{ c }}' ? 'ring-2 ring-white' : ''"></span>
+            </label>
+          {% endfor %}
+        </div>
+        <button type="submit"
+                class="px-4 py-2 bg-indigo-600 text-white rounded-md hover:bg-indigo-700 transition-colors cursor-pointer">
+          Create
+        </button>
+      </form>
+    </div>
+
+    <div class="bg-[#2a2f35] p-4 rounded-lg">
+      <h2 class="text-lg font-semibold mb-3">Your tags</h2>
+      {% if tags %}
+        <ul class="space-y-2">
+          {% for tag in tags %}
+            <li class="bg-[#39404b] rounded-md p-3"
+                x-data="{ editing: false, color: '{{ tag.color }}' }">
+              <div x-show="!editing" class="flex items-center justify-between gap-3">
+                <span class="inline-flex items-center gap-2">
+                  <span class="w-3 h-3 rounded-full"
+                        style="background-color: {{ tag.color|tag_color_hex }};"></span>
+                  <span class="px-2 py-1 rounded-md text-sm text-white"
+                        style="background-color: {{ tag.color|tag_color_hex }};">{{ tag.name }}</span>
+                </span>
+                <div class="flex gap-2">
+                  <button @click="editing = true"
+                          class="px-3 py-1 bg-indigo-600 text-white rounded hover:bg-indigo-700 transition-colors cursor-pointer text-sm">
+                    Edit
+                  </button>
+                  <form method="post"
+                        action="{% url 'tag_delete' tag.id %}"
+                        onsubmit="return confirm('Delete this tag? It will be removed from all tracked items.');">
+                    {% csrf_token %}
+                    <button type="submit"
+                            class="px-3 py-1 bg-red-600 text-white rounded hover:bg-red-700 transition-colors cursor-pointer text-sm">
+                      Delete
+                    </button>
+                  </form>
+                </div>
+              </div>
+              <form x-show="editing"
+                    x-cloak
+                    method="post"
+                    action="{% url 'tag_edit' tag.id %}"
+                    class="flex flex-col md:flex-row gap-3 items-start md:items-center">
+                {% csrf_token %}
+                <input name="name"
+                       type="text"
+                       required
+                       maxlength="50"
+                       value="{{ tag.name }}"
+                       class="flex-1 w-full py-2 px-3 bg-[#2a2f35] rounded-md text-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                <div class="flex flex-wrap gap-2">
+                  {% for c in tag_colors %}
+                    <label class="cursor-pointer">
+                      <input type="radio"
+                             name="color"
+                             value="{{ c }}"
+                             class="hidden"
+                             x-model="color">
+                      <span class="w-6 h-6 block rounded-full ring-offset-2 ring-offset-[#39404b]"
+                            style="background-color: {{ c|tag_color_hex }};"
+                            :class="color === '{{ c }}' ? 'ring-2 ring-white' : ''"></span>
+                    </label>
+                  {% endfor %}
+                </div>
+                <div class="flex gap-2">
+                  <button type="submit"
+                          class="px-3 py-1 bg-emerald-600 text-white rounded hover:bg-emerald-700 transition-colors cursor-pointer text-sm">
+                    Save
+                  </button>
+                  <button type="button"
+                          @click="editing = false"
+                          class="px-3 py-1 bg-gray-600 text-white rounded hover:bg-gray-700 transition-colors cursor-pointer text-sm">
+                    Cancel
+                  </button>
+                </div>
+              </form>
+            </li>
+          {% endfor %}
+        </ul>
+      {% else %}
+        <p class="text-gray-400">You haven't created any tags yet.</p>
+      {% endif %}
+    </div>
+  </div>
+{% endblock content %}

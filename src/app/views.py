@@ -29,6 +29,7 @@ from app.models import (
     Season,
     Sources,
     Status,
+    Tag,
     UserMessage,
 )
 from app.providers import manual, services, tmdb
@@ -62,7 +63,12 @@ def home(request):
         return render(request, "app/components/home_grid.html", context)
 
     home_sections = []
-    for status in (Status.IN_PROGRESS.value, Status.PLANNING.value):
+    for status in (
+        Status.IN_PROGRESS.value,
+        Status.PLANNING.value,
+        Status.PAUSED.value,
+        Status.TODO.value,
+    ):
         media_types = BasicMedia.objects.get_home_status(
             user=request.user,
             status=status,
@@ -127,14 +133,28 @@ def media_list(request, media_type):
         f"{media_type}_layout",
         request.GET.get("layout"),
     )
-    sort_filter = request.user.update_preference(
-        f"{media_type}_sort",
-        request.GET.get("sort"),
-    )
+    # Tag is an app-level sort option not present in MediaSortChoices
+    # (users/models.py not mounted), so we handle it outside update_preference
+    # which would reject unknown values.
+    raw_sort = request.GET.get("sort")
+    if raw_sort == "tag":
+        sort_filter = "tag"
+    else:
+        sort_filter = request.user.update_preference(
+            f"{media_type}_sort",
+            raw_sort,
+        )
     status_filter = request.user.update_preference(
         f"{media_type}_status",
         request.GET.get("status"),
     )
+    tag_param = request.GET.get("tag", "")
+    tag_filter = None
+    if tag_param and tag_param != "all":
+        try:
+            tag_filter = int(tag_param)
+        except (TypeError, ValueError):
+            tag_filter = None
     search_query = request.GET.get("search", "")
     page = request.GET.get("page", 1)
 
@@ -149,6 +169,7 @@ def media_list(request, media_type):
         status_filter=status_filter,
         sort_filter=sort_filter,
         search=search_query,
+        tag_filter=tag_filter,
     )
 
     # Paginate results
@@ -161,6 +182,8 @@ def media_list(request, media_type):
         media_type,
     )
 
+    user_tags = list(Tag.objects.filter(user=request.user))
+
     context = {
         "media_type": media_type,
         "media_type_plural": app_tags.media_type_readable_plural(media_type).lower(),
@@ -169,8 +192,10 @@ def media_list(request, media_type):
         "layout_class": ".media-grid" if layout == "grid" else "tbody",
         "current_sort": sort_filter,
         "current_status": status_filter,
-        "sort_choices": MediaSortChoices.choices,
+        "current_tag": tag_param if tag_param else "all",
+        "sort_choices": [*MediaSortChoices.choices, ("tag", "Tag")],
         "status_choices": MediaStatusChoices.choices,
+        "user_tags": user_tags,
     }
 
     # Handle HTMX requests for partial updates
@@ -1111,6 +1136,141 @@ def statistics(request):
     }
 
     return render(request, "app/statistics.html", context)
+
+
+TAG_COLORS = [
+    "indigo",
+    "emerald",
+    "amber",
+    "rose",
+    "sky",
+    "fuchsia",
+    "lime",
+    "orange",
+    "teal",
+    "violet",
+    "pink",
+    "cyan",
+    "red",
+    "yellow",
+    "slate",
+]
+
+
+@require_http_methods(["GET", "POST"])
+def tags(request):
+    """List all tags for the user and create a new tag."""
+    if request.method == "POST":
+        name = (request.POST.get("name") or "").strip()
+        color = request.POST.get("color", "indigo")
+        if color not in TAG_COLORS:
+            color = "indigo"
+        if not name:
+            messages.error(request, "Tag name is required.")
+        elif Tag.objects.filter(user=request.user, name__iexact=name).exists():
+            messages.error(request, f'Tag "{name}" already exists.')
+        else:
+            Tag.objects.create(user=request.user, name=name, color=color)
+            messages.success(request, f'Tag "{name}" created.')
+        return redirect("tags")
+
+    user_tags = Tag.objects.filter(user=request.user)
+    return render(
+        request,
+        "app/tags.html",
+        {
+            "tags": user_tags,
+            "tag_colors": TAG_COLORS,
+        },
+    )
+
+
+@require_POST
+def tag_edit(request, tag_id):
+    """Rename or recolor a tag."""
+    tag = Tag.objects.filter(user=request.user, id=tag_id).first()
+    if not tag:
+        messages.error(request, "Tag not found.")
+        return redirect("tags")
+
+    name = (request.POST.get("name") or "").strip()
+    color = request.POST.get("color", tag.color)
+    if color not in TAG_COLORS:
+        color = tag.color
+    if not name:
+        messages.error(request, "Tag name is required.")
+    elif (
+        Tag.objects.filter(user=request.user, name__iexact=name)
+        .exclude(id=tag.id)
+        .exists()
+    ):
+        messages.error(request, f'Tag "{name}" already exists.')
+    else:
+        tag.name = name
+        tag.color = color
+        tag.save()
+        messages.success(request, "Tag updated.")
+    return redirect("tags")
+
+
+@require_POST
+def tag_delete(request, tag_id):
+    """Delete a tag (removes it from every media instance that used it)."""
+    tag = Tag.objects.filter(user=request.user, id=tag_id).first()
+    if tag:
+        tag.delete()
+        messages.success(request, "Tag deleted.")
+    return redirect("tags")
+
+
+@require_GET
+def tags_modal(request, media_type, instance_id):
+    """Return the modal showing all tags for a given media instance."""
+    media = BasicMedia.objects.get_media(request.user, media_type, instance_id)
+    user_tags = Tag.objects.filter(user=request.user)
+    selected_ids = set(media.tags.values_list("id", flat=True))
+
+    return render(
+        request,
+        "app/components/fill_tags.html",
+        {
+            "media": media,
+            "media_type": media_type,
+            "user_tags": user_tags,
+            "selected_ids": selected_ids,
+        },
+    )
+
+
+@require_POST
+def media_tag_toggle(request):
+    """Toggle a tag on or off for a given media instance."""
+    media_type = request.POST["media_type"]
+    instance_id = request.POST["instance_id"]
+    tag_id = request.POST["tag_id"]
+
+    media = BasicMedia.objects.get_media(request.user, media_type, instance_id)
+    tag = Tag.objects.filter(user=request.user, id=tag_id).first()
+    if not tag:
+        return HttpResponseBadRequest("Invalid tag")
+
+    if media.tags.filter(id=tag.id).exists():
+        media.tags.remove(tag)
+        has_tag = False
+    else:
+        media.tags.add(tag)
+        has_tag = True
+
+    return render(
+        request,
+        "app/components/tag_item_button.html",
+        {
+            "tag": tag,
+            "media_type": media_type,
+            "instance_id": instance_id,
+            "has_tag": has_tag,
+        },
+    )
 
 
 @require_GET

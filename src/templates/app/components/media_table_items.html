@@ -65,6 +65,22 @@
 
     <td class="p-2 text-center">{{ media.status|media_status_readable }}</td>
 
+    <td class="p-2 text-center">
+      {% with media_tags=media.tags.all %}
+        {% if media_tags %}
+          <div class="flex flex-wrap justify-center gap-1">
+            {% for tag in media_tags %}
+              <span class="text-white text-xs px-2 py-0.5 rounded-md"
+                    style="background-color: {{ tag.color|tag_color_hex }};"
+                    title="{{ tag.name }}">{{ tag.name }}</span>
+            {% endfor %}
+          </div>
+        {% else %}
+          <span class="text-gray-500">-</span>
+        {% endif %}
+      {% endwith %}
+    </td>
+
     {% if media.start_date %}
       <td class="p-2 text-center">{{ media.start_date|date_format:user }}</td>
     {% else %}
