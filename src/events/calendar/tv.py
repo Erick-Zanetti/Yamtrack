@@ -1,8 +1,9 @@
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import requests
+from django.conf import settings
 from django.core.cache import cache
 from django.db import transaction
 from django.db.models import Prefetch
@@ -16,6 +17,10 @@ from events.models import Event
 from .helpers import date_parser
 
 logger = logging.getLogger(__name__)
+
+# TVMaze stores the exact air time, which can land on the next UTC day
+# compared to TMDB's date-only value (e.g. a US evening broadcast).
+TVMAZE_DATE_TOLERANCE = timedelta(days=1)
 
 
 def process_tv(tv_item, events_bulk):
@@ -114,7 +119,7 @@ def process_tv_seasons(tv_item, seasons_to_process, events_bulk):
 
         season_metadata = process_seasons_data[season_key]
 
-        season_item, _ = Item.objects.get_or_create(
+        season_item, created = Item.objects.get_or_create(
             media_id=tv_item.media_id,
             source=tv_item.source,
             media_type=MediaTypes.SEASON.value,
@@ -124,11 +129,32 @@ def process_tv_seasons(tv_item, seasons_to_process, events_bulk):
                 "image": season_metadata["image"],
             },
         )
+        if not created:
+            refresh_placeholder_season_image(season_item, season_metadata)
 
         processed_season_items.append(season_item)
         process_season_episodes(season_item, season_metadata, events_bulk)
 
     return processed_season_items
+
+
+def refresh_placeholder_season_image(season_item, season_metadata):
+    """Replace a placeholder season poster once TMDB has a real one.
+
+    Season items are often created before TMDB has a poster for an upcoming
+    season, and the stored image was never revisited afterwards.
+    """
+    new_image = season_metadata.get("image")
+    if (
+        season_item.image != settings.IMG_NONE
+        or not new_image
+        or new_image == settings.IMG_NONE
+    ):
+        return
+
+    Item.objects.filter(pk=season_item.pk).update(image=new_image)
+    season_item.image = new_image
+    logger.info("%s - Replaced placeholder poster with %s", season_item, new_image)
 
 
 def reopen_completed_tv_with_new_seasons(tv_item, season_items, events_bulk):
@@ -273,6 +299,8 @@ def process_season_episodes(item, metadata, events_bulk):
         logger.warning("%s - No episodes found in metadata", item)
         return
 
+    tvmaze_map = validate_tvmaze_season_map(item, metadata, tvmaze_map)
+
     for episode in metadata["episodes"]:
         episode_number = episode["episode_number"]
         season_number = metadata["season_number"]
@@ -291,6 +319,45 @@ def process_season_episodes(item, metadata, events_bulk):
                 datetime=episode_datetime,
             ),
         )
+
+
+def validate_tvmaze_season_map(item, metadata, tvmaze_map):
+    """Return the TVMaze map only if its dates agree with TMDB for this season.
+
+    TVMaze and TMDB number seasons differently for some shows (Futurama's
+    TVMaze S11 is the 2023 revival while TMDB's S11 airs in 2026), so a
+    matching "season_episode" key can describe a completely different season.
+    """
+    if not tvmaze_map:
+        return tvmaze_map
+
+    season_number = metadata["season_number"]
+
+    for episode in metadata["episodes"]:
+        episode_number = episode["episode_number"]
+        tvmaze_airstamp = tvmaze_map.get(f"{season_number}_{episode_number}")
+        if not tvmaze_airstamp or not episode.get("air_date"):
+            continue
+
+        try:
+            tvmaze_date = datetime.fromisoformat(tvmaze_airstamp).date()
+            tmdb_date = date_parser(episode["air_date"]).date()
+        except ValueError:
+            continue
+
+        if abs(tvmaze_date - tmdb_date) > TVMAZE_DATE_TOLERANCE:
+            logger.warning(
+                "%s - TVMaze S%sE%s aired %s but TMDB says %s; "
+                "season numbering differs, ignoring TVMaze dates for this season",
+                item,
+                season_number,
+                episode_number,
+                tvmaze_date,
+                tmdb_date,
+            )
+            return {}
+
+    return tvmaze_map
 
 
 def get_episode_datetime(episode, season_number, episode_number, tvmaze_map):

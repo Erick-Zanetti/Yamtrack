@@ -3,6 +3,7 @@ from unittest.mock import MagicMock, patch
 from zoneinfo import ZoneInfo
 
 import requests
+from django.conf import settings
 from django.core.cache import cache
 from django.test import TestCase
 
@@ -15,6 +16,7 @@ from events.calendar.tv import (
     get_tvmaze_response,
     process_season_episodes,
     process_tv,
+    process_tv_seasons,
 )
 from events.models import Event
 from events.tests.calendar.utils import CalendarFixturesMixin
@@ -351,3 +353,121 @@ class CalendarTVTests(CalendarFixturesMixin, TestCase):
         ]
 
         self.assertEqual(get_tvmaze_response("81189"), {})
+
+    @patch("events.calendar.tv.get_tvmaze_episode_map")
+    def test_process_season_episodes_ignores_tvmaze_when_season_numbering_differs(
+        self,
+        mock_get_tvmaze_episode_map,
+    ):
+        """TVMaze dates that disagree with TMDB for a season must be discarded.
+
+        TVMaze and TMDB number seasons differently for some shows (Futurama's
+        TVMaze S11 is the 2023 revival, TMDB's S11 airs in 2026), so a matching
+        "season_episode" key can point at a completely different season.
+        """
+        mock_get_tvmaze_episode_map.return_value = {
+            "11_1": "2023-07-24T16:00:00+00:00",
+            "11_2": "2023-07-31T16:00:00+00:00",
+            "11_3": "2023-08-07T16:00:00+00:00",
+        }
+
+        events_bulk = []
+        process_season_episodes(
+            self.season_item,
+            {
+                "season_number": 11,
+                "tvdb_id": "73871",
+                "episodes": [
+                    {"episode_number": 1, "air_date": "2026-08-03"},
+                    {"episode_number": 2, "air_date": "2026-08-03"},
+                    {"episode_number": 3, "air_date": None},
+                ],
+            },
+            events_bulk,
+        )
+
+        self.assertEqual(
+            [event.datetime for event in events_bulk],
+            [
+                date_parser("2026-08-03"),
+                date_parser("2026-08-03"),
+                datetime.datetime.min.replace(tzinfo=ZoneInfo("UTC")),
+            ],
+        )
+
+    @patch("events.calendar.tv.get_tvmaze_episode_map")
+    def test_process_season_episodes_keeps_tvmaze_when_dates_agree(
+        self,
+        mock_get_tvmaze_episode_map,
+    ):
+        """Agreeing TVMaze timestamps are kept, even for TMDB-undated episodes."""
+        mock_get_tvmaze_episode_map.return_value = {
+            # US evening airing lands on the next UTC day: still within tolerance.
+            "1_1": "2026-08-03T03:30:00+00:00",
+            "1_2": "2026-08-10T03:30:00+00:00",
+            "1_3": "2026-08-17T03:30:00+00:00",
+        }
+
+        events_bulk = []
+        process_season_episodes(
+            self.season_item,
+            {
+                "season_number": 1,
+                "tvdb_id": "81189",
+                "episodes": [
+                    {"episode_number": 1, "air_date": "2026-08-02"},
+                    {"episode_number": 2, "air_date": "2026-08-10"},
+                    {"episode_number": 3, "air_date": None},
+                ],
+            },
+            events_bulk,
+        )
+
+        self.assertEqual(
+            [event.datetime for event in events_bulk],
+            [
+                datetime.datetime.fromisoformat("2026-08-03T03:30:00+00:00"),
+                datetime.datetime.fromisoformat("2026-08-10T03:30:00+00:00"),
+                datetime.datetime.fromisoformat("2026-08-17T03:30:00+00:00"),
+            ],
+        )
+
+    @patch("events.calendar.tv.tmdb.tv_with_seasons")
+    def test_process_tv_seasons_refreshes_placeholder_season_image(
+        self,
+        mock_tv_with_seasons,
+    ):
+        """A season stored with the placeholder poster picks up TMDB's real one."""
+        self.season_item.image = settings.IMG_NONE
+        self.season_item.save()
+        mock_tv_with_seasons.return_value = {
+            "season/1": {
+                "image": "http://example.com/real-poster.jpg",
+                "season_number": 1,
+                "episodes": [],
+            },
+        }
+
+        process_tv_seasons(self.tv_item, [1], [])
+
+        self.season_item.refresh_from_db()
+        self.assertEqual(self.season_item.image, "http://example.com/real-poster.jpg")
+
+    @patch("events.calendar.tv.tmdb.tv_with_seasons")
+    def test_process_tv_seasons_keeps_existing_season_image(
+        self,
+        mock_tv_with_seasons,
+    ):
+        """A season that already has a real poster is left untouched."""
+        mock_tv_with_seasons.return_value = {
+            "season/1": {
+                "image": "http://example.com/other-poster.jpg",
+                "season_number": 1,
+                "episodes": [],
+            },
+        }
+
+        process_tv_seasons(self.tv_item, [1], [])
+
+        self.season_item.refresh_from_db()
+        self.assertEqual(self.season_item.image, "http://example.com/breakingbad.jpg")
