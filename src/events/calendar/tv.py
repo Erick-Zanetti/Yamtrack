@@ -6,7 +6,7 @@ import requests
 from django.conf import settings
 from django.core.cache import cache
 from django.db import transaction
-from django.db.models import Prefetch
+from django.db.models import Max, Prefetch
 from django.utils import timezone
 from simple_history.utils import bulk_create_with_history, bulk_update_with_history
 
@@ -176,12 +176,15 @@ def reopen_completed_tv_with_new_seasons(tv_item, season_items, events_bulk):
 
     # Only future season events should reopen a completed show; processed
     # past-only seasons can exist when local season tracking was incomplete.
-    future_season_numbers = {
-        event.item.season_number
-        for event in events_bulk
-        if event.item in eligible_season_items and event.datetime >= timezone.now()
-    }
-    if not future_season_numbers:
+    latest_future_episode = {}
+    for event in events_bulk:
+        if event.item in eligible_season_items and event.datetime >= timezone.now():
+            season_number = event.item.season_number
+            latest_future_episode[season_number] = max(
+                latest_future_episode.get(season_number, 0),
+                event.content_number or 0,
+            )
+    if not latest_future_episode:
         logger.info(
             "%s - Processed seasons have no future events; "
             "skipping completed-TV reopening",
@@ -189,7 +192,7 @@ def reopen_completed_tv_with_new_seasons(tv_item, season_items, events_bulk):
         )
         return
 
-    sorted_season_numbers = sorted(future_season_numbers)
+    sorted_season_numbers = sorted(latest_future_episode)
     completed_tvs = list(
         TV.objects.filter(
             item=tv_item,
@@ -199,7 +202,9 @@ def reopen_completed_tv_with_new_seasons(tv_item, season_items, events_bulk):
         .prefetch_related(
             Prefetch(
                 "seasons",
-                queryset=Season.objects.select_related("item"),
+                queryset=Season.objects.select_related("item").annotate(
+                    last_watched_episode=Max("episodes__item__episode_number"),
+                ),
             ),
         ),
     )
@@ -215,33 +220,45 @@ def reopen_completed_tv_with_new_seasons(tv_item, season_items, events_bulk):
     )
 
     seasons_by_tv_id = {}
+    grown_seasons_by_tv_id = {}
     tvs_to_update = []
 
     for tv in completed_tvs:
-        existing_season_numbers = {
-            season.item.season_number
+        tracked_seasons = {
+            season.item.season_number: season
             for season in tv.seasons.all()
             if season.item.season_number and season.item.season_number > 0
         }
         missing_season_numbers = [
             season_number
             for season_number in sorted_season_numbers
-            if season_number not in existing_season_numbers
+            if season_number not in tracked_seasons
+        ]
+        # TMDB sometimes appends a new cour to an existing season instead of
+        # creating a new one, so a tracked season can gain unwatched episodes.
+        grown_seasons = [
+            season
+            for season_number, season in tracked_seasons.items()
+            if season.status == Status.COMPLETED.value
+            and latest_future_episode.get(season_number, 0)
+            > (season.last_watched_episode or 0)
         ]
 
-        if not missing_season_numbers:
+        if not missing_season_numbers and not grown_seasons:
             logger.info(
-                "%s - User %s already tracks all discovered seasons",
+                "%s - User %s already tracks all discovered episodes",
                 tv_item,
                 tv.user,
             )
             continue
 
         logger.info(
-            "%s - Reopening completed TV for user %s; new seasons: %s",
+            "%s - Reopening completed TV for user %s; new seasons: %s, "
+            "seasons with new episodes: %s",
             tv_item,
             tv.user,
             missing_season_numbers,
+            [season.item.season_number for season in grown_seasons],
         )
         seasons_by_tv_id[tv.id] = [
             Season(
@@ -252,10 +269,17 @@ def reopen_completed_tv_with_new_seasons(tv_item, season_items, events_bulk):
             )
             for season_number in missing_season_numbers
         ]
+        for season in grown_seasons:
+            season.status = (
+                Status.IN_PROGRESS.value
+                if season.last_watched_episode
+                else Status.PLANNING.value
+            )
+        grown_seasons_by_tv_id[tv.id] = grown_seasons
         tv.status = Status.IN_PROGRESS.value
         tvs_to_update.append(tv)
 
-    if not seasons_by_tv_id:
+    if not tvs_to_update:
         logger.info("%s - No completed TV entries required reopening", tv_item)
         return
 
@@ -267,16 +291,24 @@ def reopen_completed_tv_with_new_seasons(tv_item, season_items, events_bulk):
                 default_user=tv.user,
             )
             bulk_update_with_history(
+                grown_seasons_by_tv_id[tv.id],
+                Season,
+                ["status"],
+                default_user=tv.user,
+            )
+            bulk_update_with_history(
                 [tv],
                 TV,
                 ["status"],
                 default_user=tv.user,
             )
             logger.info(
-                "%s - Reopened TV for user %s and created %d planning seasons",
+                "%s - Reopened TV for user %s: %d planning seasons created, "
+                "%d tracked seasons reopened",
                 tv_item,
                 tv.user,
                 len(seasons_by_tv_id[tv.id]),
+                len(grown_seasons_by_tv_id[tv.id]),
             )
 
 

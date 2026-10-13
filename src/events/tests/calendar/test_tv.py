@@ -7,7 +7,7 @@ from django.conf import settings
 from django.core.cache import cache
 from django.test import TestCase
 
-from app.models import TV, Item, Season, Status
+from app.models import TV, Episode, Item, MediaTypes, Season, Status
 from events.calendar.helpers import date_parser
 from events.calendar.tv import (
     get_episode_datetime,
@@ -208,6 +208,137 @@ class CalendarTVTests(CalendarFixturesMixin, TestCase):
             ).exists(),
         )
         self.assertEqual(len(events_bulk), 1)
+
+    def _complete_season_one_with_watched_episodes(self, episode_numbers):
+        TV.objects.filter(item=self.tv_item, user=self.user).update(
+            status=Status.COMPLETED.value,
+        )
+        Season.objects.filter(item=self.season_item, user=self.user).update(
+            status=Status.COMPLETED.value,
+        )
+        season = Season.objects.get(item=self.season_item, user=self.user)
+        Episode.objects.bulk_create(
+            [
+                Episode(
+                    item=Item.objects.create(
+                        media_id=self.tv_item.media_id,
+                        source=self.tv_item.source,
+                        media_type=MediaTypes.EPISODE.value,
+                        title=self.tv_item.title,
+                        season_number=1,
+                        episode_number=episode_number,
+                    ),
+                    related_season=season,
+                    end_date=date_parser("2008-02-01"),
+                )
+                for episode_number in episode_numbers
+            ],
+        )
+
+    @staticmethod
+    def _season_one_metadata(episodes):
+        return {
+            "season/1": {
+                "image": "http://example.com/season1.jpg",
+                "season_number": 1,
+                "episodes": episodes,
+                "tvdb_id": "81189",
+            },
+        }
+
+    @patch("events.calendar.tv.get_tvmaze_episode_map")
+    @patch("events.calendar.tv.tmdb.tv_with_seasons")
+    @patch("events.calendar.tv.tmdb.tv")
+    def test_process_tv_reopens_completed_show_when_tracked_season_grows(
+        self,
+        mock_tv,
+        mock_tv_with_seasons,
+        mock_get_tvmaze_episode_map,
+    ):
+        """A new cour appended to an already-tracked season reopens the show.
+
+        TMDB sometimes keeps a show in a single season and appends the new
+        episodes to it (e.g. Ranma1/2), so no new season number ever appears.
+        """
+        self._complete_season_one_with_watched_episodes([1])
+        mock_tv.return_value = {
+            "related": {"seasons": [{"season_number": 1, "episodes": [1, 2]}]},
+            "next_episode_season": 1,
+        }
+        mock_tv_with_seasons.return_value = self._season_one_metadata(
+            [
+                {"episode_number": 1, "air_date": "2008-01-20"},
+                {"episode_number": 2, "air_date": "2027-01-20"},
+            ],
+        )
+        mock_get_tvmaze_episode_map.return_value = {}
+
+        events_bulk = []
+        process_tv(self.tv_item, events_bulk)
+
+        tv = TV.objects.get(item=self.tv_item, user=self.user)
+        season_one = Season.objects.get(item=self.season_item, user=self.user)
+        self.assertEqual(tv.status, Status.IN_PROGRESS.value)
+        self.assertEqual(season_one.status, Status.IN_PROGRESS.value)
+        self.assertEqual(Season.objects.filter(user=self.user).count(), 1)
+
+    @patch("events.calendar.tv.get_tvmaze_episode_map")
+    @patch("events.calendar.tv.tmdb.tv_with_seasons")
+    @patch("events.calendar.tv.tmdb.tv")
+    def test_process_tv_reopens_unwatched_completed_season_as_planning(
+        self,
+        mock_tv,
+        mock_tv_with_seasons,
+        mock_get_tvmaze_episode_map,
+    ):
+        """A season marked completed without watched episodes goes to planning."""
+        self._complete_season_one_with_watched_episodes([])
+        mock_tv.return_value = {
+            "related": {"seasons": [{"season_number": 1, "episodes": [1]}]},
+            "next_episode_season": 1,
+        }
+        mock_tv_with_seasons.return_value = self._season_one_metadata(
+            [{"episode_number": 1, "air_date": "2027-01-20"}],
+        )
+        mock_get_tvmaze_episode_map.return_value = {}
+
+        process_tv(self.tv_item, [])
+
+        tv = TV.objects.get(item=self.tv_item, user=self.user)
+        season_one = Season.objects.get(item=self.season_item, user=self.user)
+        self.assertEqual(tv.status, Status.IN_PROGRESS.value)
+        self.assertEqual(season_one.status, Status.PLANNING.value)
+
+    @patch("events.calendar.tv.get_tvmaze_episode_map")
+    @patch("events.calendar.tv.tmdb.tv_with_seasons")
+    @patch("events.calendar.tv.tmdb.tv")
+    def test_process_tv_keeps_completed_when_future_episode_already_watched(
+        self,
+        mock_tv,
+        mock_tv_with_seasons,
+        mock_get_tvmaze_episode_map,
+    ):
+        """A wrong future date on an episode already watched must not reopen."""
+        self._complete_season_one_with_watched_episodes([1, 2])
+        mock_tv.return_value = {
+            "related": {"seasons": [{"season_number": 1, "episodes": [1, 2]}]},
+            "next_episode_season": 1,
+        }
+        mock_tv_with_seasons.return_value = self._season_one_metadata(
+            [
+                {"episode_number": 1, "air_date": "2008-01-20"},
+                {"episode_number": 2, "air_date": "2027-01-20"},
+            ],
+        )
+        mock_get_tvmaze_episode_map.return_value = {}
+
+        events_bulk = []
+        process_tv(self.tv_item, events_bulk)
+
+        tv = TV.objects.get(item=self.tv_item, user=self.user)
+        season_one = Season.objects.get(item=self.season_item, user=self.user)
+        self.assertEqual(tv.status, Status.COMPLETED.value)
+        self.assertEqual(season_one.status, Status.COMPLETED.value)
 
     @patch("events.calendar.tv.services.api_request")
     def test_get_tvmaze_episode_map(self, mock_api_request):
